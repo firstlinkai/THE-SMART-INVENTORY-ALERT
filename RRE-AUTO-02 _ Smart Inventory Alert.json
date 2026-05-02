@@ -1,0 +1,873 @@
+{
+  "name": "RRE-AUTO-02 | Smart Inventory Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "574d6767-89c3-45b1-8ac0-7152e0474aeb",
+      "name": "Telegram Staff Bot Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2432,
+        368
+      ],
+      "webhookId": "smart-inventory-webhook-001",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse staff Telegram message: /used 5 ice OR /stock charcoal 10\nconst message = $input.first().json.message;\nconst text = message?.text || '';\nconst chatId = message?.chat?.id;\nconst fromId = message?.from?.id;\nconst fromName = message?.from?.first_name || 'Staff';\nconst timestamp = new Date().toISOString();\n\n// Normalize item aliases\nconst itemAliases = {\n  ice: 'Ice',\n  ices: 'Ice',\n  charcoal: 'Charcoal',\n  coal: 'Charcoal',\n  water: 'Drinking Water',\n  'drinking water': 'Drinking Water',\n  softdrink: 'Soft Drinks',\n  'soft drink': 'Soft Drinks',\n  'soft drinks': 'Soft Drinks',\n  soda: 'Soft Drinks'\n};\n\nlet command = '';\nlet itemRaw = '';\nlet quantity = 0;\nlet parsedItem = '';\nlet isValid = false;\n\n// Match /used <qty> <item>\nconst usedMatch = text.match(/^\\/used\\s+(\\d+)\\s+(.+)$/i);\n// Match /stock <item> <qty>\nconst stockMatch = text.match(/^\\/stock\\s+(.+?)\\s+(\\d+)$/i);\n\nif (usedMatch) {\n  command = 'used';\n  quantity = parseInt(usedMatch[1]);\n  itemRaw = usedMatch[2].trim().toLowerCase();\n  parsedItem = itemAliases[itemRaw] || (itemRaw.charAt(0).toUpperCase() + itemRaw.slice(1));\n  isValid = true;\n} else if (stockMatch) {\n  command = 'stock';\n  itemRaw = stockMatch[1].trim().toLowerCase();\n  quantity = parseInt(stockMatch[2]);\n  parsedItem = itemAliases[itemRaw] || (itemRaw.charAt(0).toUpperCase() + itemRaw.slice(1));\n  isValid = true;\n}\n\nreturn [{\n  json: {\n    isValid,\n    command,\n    item: parsedItem,\n    quantity,\n    chatId,\n    fromId,\n    fromName,\n    timestamp,\n    rawText: text\n  }\n}];"
+      },
+      "id": "2a2df0f3-1a04-4516-bd14-be376770728a",
+      "name": "Parse Staff Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2224,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-valid",
+              "leftValue": "={{ $json.isValid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "31d4221d-301d-4502-9c0a-30b23abf47ee",
+      "name": "Is Valid Command?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2000,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ '❌ Invalid command, ' + $json.fromName + '! Use:\\n/used <qty> <item>  — to log usage\\n/stock <item> <qty>  — to set current stock\\n\\nExample: /used 5 ice\\nExample: /stock charcoal 10' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "ebe52723-a112-4c5d-8248-d5675d8f79b0",
+      "name": "Reply Invalid Command",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1776,
+        560
+      ],
+      "webhookId": "7cc7bf92-898f-440a-b34f-fbf7f4083936",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Inventory",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "985a7921-f90e-4f15-8eed-a9641d24b218",
+      "name": "Read Inventory Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -1776,
+        368
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ne5lFAYcDs8mggLN",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find the matching inventory row and compute new stock\nconst parsed = $('Parse Staff Message').first().json;\nconst rows = $input.all();\n\nconst item = parsed.item;\nconst command = parsed.command;\nconst qty = parsed.quantity;\n\nlet matchedRow = null;\nlet rowIndex = -1;\n\nfor (let i = 0; i < rows.length; i++) {\n  const r = rows[i].json;\n  if (r.Item && r.Item.trim().toLowerCase() === item.toLowerCase()) {\n    matchedRow = r;\n    rowIndex = i + 2; // Sheets row index (1 header + 1-based)\n    break;\n  }\n}\n\nif (!matchedRow) {\n  return [{\n    json: {\n      found: false,\n      item,\n      chatId: parsed.chatId,\n      fromName: parsed.fromName,\n      message: `⚠️ Item \"${item}\" not found in inventory. Please check the item name.`\n    }\n  }];\n}\n\nlet currentStock = parseInt(matchedRow['Current Stock'] || 0);\nconst minThreshold = parseInt(matchedRow['Min Threshold'] || 5);\nconst unit = matchedRow['Unit'] || 'units';\nlet newStock = currentStock;\n\nif (command === 'used') {\n  newStock = Math.max(0, currentStock - qty);\n} else if (command === 'stock') {\n  newStock = qty;\n}\n\n// Predictive Friday threshold: lower threshold by 30% on Fridays\nconst today = new Date();\nconst dayOfWeek = today.getDay(); // 0=Sun, 5=Fri\nconst isFriday = dayOfWeek === 5;\nconst effectiveThreshold = isFriday ? Math.ceil(minThreshold * 1.3) : minThreshold;\n\nconst isLowStock = newStock <= effectiveThreshold;\nconst isCritical = newStock <= Math.floor(effectiveThreshold * 0.5);\n\nreturn [{\n  json: {\n    found: true,\n    rowIndex,\n    item,\n    command,\n    previousStock: currentStock,\n    newStock,\n    qty,\n    unit,\n    minThreshold,\n    effectiveThreshold,\n    isLowStock,\n    isCritical,\n    isFriday,\n    chatId: parsed.chatId,\n    fromName: parsed.fromName,\n    fromId: parsed.fromId,\n    timestamp: parsed.timestamp\n  }\n}];"
+      },
+      "id": "800e13da-7626-49d1-aa80-f634a4671782",
+      "name": "Compute New Stock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1552,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-found",
+              "leftValue": "={{ $json.found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "df94a87f-002d-4ebe-aa37-2510f283e410",
+      "name": "Item Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1344,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {}
+      },
+      "id": "2215f1e0-dac0-47cf-8cbb-7a983d3dd546",
+      "name": "Reply Item Not Found",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1120,
+        560
+      ],
+      "webhookId": "2ae4b642-6398-4590-a4af-5592fd2c8986",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Inventory",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Current Stock": "={{ $json.newStock }}",
+            "Last Updated": "={{ $json.timestamp }}",
+            "Last Updated By": "={{ $json.fromName }}"
+          },
+          "matchingColumns": [
+            "Item"
+          ],
+          "schema": [
+            {
+              "id": "Item",
+              "displayName": "Item",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Current Stock",
+              "displayName": "Current Stock",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Last Updated",
+              "displayName": "Last Updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Last Updated By",
+              "displayName": "Last Updated By",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6f2faf9f-1621-4284-b570-d5f657e97753",
+      "name": "Update Inventory Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -1120,
+        368
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ne5lFAYcDs8mggLN",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $('Compute New Stock').first().json.timestamp }}",
+            "Staff Name": "={{ $('Compute New Stock').first().json.fromName }}",
+            "Staff ID": "={{ $('Compute New Stock').first().json.fromId }}",
+            "Item": "={{ $('Compute New Stock').first().json.item }}",
+            "Action": "={{ $('Compute New Stock').first().json.command }}",
+            "Quantity": "={{ $('Compute New Stock').first().json.qty }}",
+            "Previous Stock": "={{ $('Compute New Stock').first().json.previousStock }}",
+            "New Stock": "={{ $('Compute New Stock').first().json.newStock }}"
+          },
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Staff Name",
+              "displayName": "Staff Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Staff ID",
+              "displayName": "Staff ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Item",
+              "displayName": "Item",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Action",
+              "displayName": "Action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Quantity",
+              "displayName": "Quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Previous Stock",
+              "displayName": "Previous Stock",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "New Stock",
+              "displayName": "New Stock",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b8eebb53-3255-4b05-a3bd-d6cbbda6e201",
+      "name": "Log to Activity Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -896,
+        368
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ne5lFAYcDs8mggLN",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Compute New Stock').first().json;\nlet emoji = '✅';\nlet statusMsg = 'Stock updated!';\n\nif (data.isCritical) {\n  emoji = '🚨';\n  statusMsg = 'CRITICAL LOW STOCK!';\n} else if (data.isLowStock) {\n  emoji = '⚠️';\n  statusMsg = 'Low stock warning!';\n}\n\nconst actionText = data.command === 'used'\n  ? `Used ${data.qty} ${data.unit}`\n  : `Set stock to ${data.newStock} ${data.unit}`;\n\nconst fridayNote = data.isFriday ? '\\n📅 *Friday Mode*: Threshold raised for weekend demand.' : '';\n\nconst staffMsg = `${emoji} *${data.item}* — ${statusMsg}\\n` +\n  `Action: ${actionText}\\n` +\n  `Previous: ${data.previousStock} | New: *${data.newStock} ${data.unit}*\\n` +\n  `Min Threshold: ${data.effectiveThreshold} ${data.unit}${fridayNote}`;\n\nreturn [{\n  json: {\n    ...data,\n    staffMsg,\n    needsOwnerAlert: data.isLowStock || data.isCritical\n  }\n}];"
+      },
+      "id": "806d7976-0eaa-414d-9a73-0c9aa9d25dc6",
+      "name": "Build Staff Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.staffMsg }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "fa91013d-cc33-48e4-b62b-9edcc569727a",
+      "name": "Reply to Staff",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -464,
+        368
+      ],
+      "webhookId": "d6f312df-abb7-4bad-9092-3e97350f58b5",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-alert",
+              "leftValue": "={{ $json.needsOwnerAlert }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8f6cadac-feb1-4df0-bbe7-baf9d18bc972",
+      "name": "Needs Owner Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst alertType = data.isCritical ? '🚨 CRITICAL STOCK ALERT' : '⚠️ LOW STOCK ALERT';\nconst urgency = data.isCritical ? 'IMMEDIATELY' : 'soon';\nconst fridayNote = data.isFriday ? '\\n📅 *Friday Alert*: Weekend demand predicted to be HIGH. Please restock before evening.' : '';\n\nconst ownerMsg = `${alertType}\\n\\n` +\n  `*${data.item}* needs restocking ${urgency}.\\n\\n` +\n  `📦 Current Stock: *${data.newStock} ${data.unit}*\\n` +\n  `📉 Minimum Required: *${data.effectiveThreshold} ${data.unit}*\\n` +\n  `👤 Reported by: ${data.fromName}${fridayNote}\\n\\n` +\n  `_Please arrange restocking._`;\n\nreturn [{ json: { ...data, ownerMsg } }];"
+      },
+      "id": "3ee3204f-26cc-4ead-a629-7a7db3f731eb",
+      "name": "Build Owner Alert Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "OWNER_TELEGRAM_CHAT_ID_HERE",
+        "text": "={{ $json.ownerMsg }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "8af4fe51-4e73-4aec-bb79-c7a2a914938c",
+      "name": "Alert Owner (Low Stock)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        208,
+        288
+      ],
+      "webhookId": "2cef407d-f7ed-4444-94c1-e01252ff501e",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 16 * * 4"
+            }
+          ]
+        }
+      },
+      "id": "3f7e77d9-5918-4079-b514-c43f79938026",
+      "name": "Thursday 4PM Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2432,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Inventory",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "6d6f763a-6dfb-497e-b3f5-4cc0d58e7ee7",
+      "name": "Read Full Inventory",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -2224,
+        768
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ne5lFAYcDs8mggLN",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the weekend shopping list from all inventory rows\nconst rows = $input.all();\nconst today = new Date();\nconst isFriday = today.getDay() === 5;\n\n// Friday threshold multiplier (pre-compute for tomorrow)\nconst thresholdMultiplier = 1.3;\n\nconst shoppingItems = [];\nconst allItems = [];\n\nfor (const row of rows) {\n  const r = row.json;\n  if (!r.Item) continue;\n\n  const currentStock = parseInt(r['Current Stock'] || 0);\n  const minThreshold = parseInt(r['Min Threshold'] || 5);\n  const weekendTarget = parseInt(r['Weekend Target'] || minThreshold * 3);\n  const unit = r['Unit'] || 'units';\n\n  // For Thursday report, use weekend threshold (higher)\n  const effectiveThreshold = Math.ceil(minThreshold * thresholdMultiplier);\n  const qtyNeeded = Math.max(0, weekendTarget - currentStock);\n\n  allItems.push({\n    item: r.Item,\n    currentStock,\n    minThreshold: effectiveThreshold,\n    weekendTarget,\n    unit,\n    qtyNeeded,\n    status: currentStock <= effectiveThreshold ? 'LOW' : 'OK'\n  });\n\n  if (qtyNeeded > 0 || currentStock <= effectiveThreshold) {\n    shoppingItems.push({ item: r.Item, qtyNeeded, currentStock, unit, weekendTarget });\n  }\n}\n\nlet shoppingListText = '';\nif (shoppingItems.length === 0) {\n  shoppingListText = '✅ All items are sufficiently stocked for the weekend!';\n} else {\n  shoppingListText = shoppingItems.map(s =>\n    `• ${s.qtyNeeded > 0 ? s.qtyNeeded : 'LOW'} ${s.unit} of *${s.item}*` +\n    ` _(Current: ${s.currentStock}, Target: ${s.weekendTarget})_`\n  ).join('\\n');\n}\n\nconst dateStr = today.toLocaleDateString('en-PH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst ownerMessage = `📋 *WEEKEND PREP ALERT*\\n` +\n  `_${dateStr}_\\n\\n` +\n  `Based on current stock levels and predicted weekend demand, please arrange the following purchases:\\n\\n` +\n  `${shoppingListText}\\n\\n` +\n  `📊 *Full Inventory Status:*\\n` +\n  allItems.map(a => `${a.status === 'LOW' ? '🔴' : '🟢'} ${a.item}: ${a.currentStock} ${a.unit}`).join('\\n') +\n  `\\n\\n_Please reply ✅ to confirm you have seen this alert._`;\n\nreturn [{\n  json: {\n    ownerMessage,\n    shoppingItemCount: shoppingItems.length,\n    hasItems: shoppingItems.length > 0\n  }\n}];"
+      },
+      "id": "dfc858fe-2817-4859-aca8-eaa894b0ccb2",
+      "name": "Build Shopping List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2000,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "OWNER_TELEGRAM_CHAT_ID_HERE",
+        "text": "={{ $json.ownerMessage }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "c30904c1-6de2-491d-967b-9b4cd8987cb2",
+      "name": "Send Weekly Shopping List to Owner",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1776,
+        768
+      ],
+      "webhookId": "7cedc537-78dc-4ea7-8266-d8601b2d99e9",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "updates": [
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "697a48e0-9c53-4c66-84c4-6be86c5108cf",
+      "name": "Owner Confirmation Callback",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2432,
+        1072
+      ],
+      "webhookId": "smart-inventory-callback-001",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cb = $input.first().json.callback_query;\nconst data = cb?.data || '';\nconst chatId = cb?.message?.chat?.id;\nconst fromName = cb?.from?.first_name || 'Owner';\n\nlet replyText = '';\nif (data === 'shopping_confirmed') {\n  replyText = `✅ Great, ${fromName}! Shopping list confirmed. Staff will be notified to expect supplies.`;\n} else if (data === 'call_staff') {\n  replyText = `📞 Please call the resort directly. Staff on duty will assist you.`;\n} else {\n  replyText = `Received your response. Thank you!`;\n}\n\nreturn [{ json: { chatId, replyText, callbackId: cb?.id } }];"
+      },
+      "id": "a1aa8962-ae7f-4604-a814-7956ce4462bf",
+      "name": "Handle Owner Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2224,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "additionalFields": {}
+      },
+      "id": "e9ae9bfd-3c02-4882-9679-9717b20eda6d",
+      "name": "Reply Owner Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2000,
+        1072
+      ],
+      "webhookId": "debad5c2-d8c4-483c-83b2-9ea016768b25",
+      "credentials": {
+        "telegramApi": {
+          "id": "Z32LbSVlUrEo0aIT",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# Smart Inventory Alert\n\n## 🔧 After Import: 3 Things to Update\n## 1. Credentials (create these in n8n Settings → Credentials)\n## 2. Replace Placeholder Values\n## 3. Set Up Google Sheet Structure\nCreate a sheet named Inventory with these exact column headers in row 1:\n\n**Item | Current Stock | Min Threshold | Weekend Target | Unit | Last Updated | Last Updated By**\n\n# 🤖 How Staff Uses It\n**/used 5 ice**        → deducts 5 from Ice stock\n**/stock charcoal 10** → sets Charcoal stock to 10\n**/used 3 water**      → deducts 3 from Drinking Water\n### The workflow handles case-insensitive aliases (ice/ices, water/drinking water, soda/soft drinks, etc.).",
+        "height": 512,
+        "width": 800
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1504,
+        784
+      ],
+      "typeVersion": 1,
+      "id": "a854c166-31cb-412f-b85f-82ebb253cb6b",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Staff Bot Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Staff Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Staff Message": {
+      "main": [
+        [
+          {
+            "node": "Is Valid Command?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid Command?": {
+      "main": [
+        [
+          {
+            "node": "Read Inventory Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Invalid Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Inventory Sheet": {
+      "main": [
+        [
+          {
+            "node": "Compute New Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute New Stock": {
+      "main": [
+        [
+          {
+            "node": "Item Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Item Found?": {
+      "main": [
+        [
+          {
+            "node": "Update Inventory Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Item Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Inventory Sheet": {
+      "main": [
+        [
+          {
+            "node": "Log to Activity Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Activity Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Staff Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Staff Reply": {
+      "main": [
+        [
+          {
+            "node": "Reply to Staff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply to Staff": {
+      "main": [
+        [
+          {
+            "node": "Needs Owner Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Owner Alert?": {
+      "main": [
+        [
+          {
+            "node": "Build Owner Alert Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Owner Alert Message": {
+      "main": [
+        [
+          {
+            "node": "Alert Owner (Low Stock)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Thursday 4PM Schedule": {
+      "main": [
+        [
+          {
+            "node": "Read Full Inventory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Full Inventory": {
+      "main": [
+        [
+          {
+            "node": "Build Shopping List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Shopping List": {
+      "main": [
+        [
+          {
+            "node": "Send Weekly Shopping List to Owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Owner Confirmation Callback": {
+      "main": [
+        [
+          {
+            "node": "Handle Owner Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Owner Callback": {
+      "main": [
+        [
+          {
+            "node": "Reply Owner Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b07f249e-c70e-4087-9396-23ea1580e0eb",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "563081422b97a9613202fc9e330444d764a4b838aee8c810ae24b64e312e87c7"
+  },
+  "id": "toSyPfjk26u4tupZ",
+  "tags": []
+}
